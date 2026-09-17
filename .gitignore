@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.py.class
+*.so
+.venv/
+venv/
+ENV/
+env/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+backend/.env
+frontend/.env
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build / cache
+build/
+dist/
+out/
+node_modules/
+coverage/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Database / local data
+*.sqlite3
+*.db
+chroma_db/
+backend/data/
+backend/repositories/
+.history/
+.test-deps/

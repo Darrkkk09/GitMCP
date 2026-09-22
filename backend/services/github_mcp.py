@@ -19,6 +19,12 @@ READ_TOOLS = {
 }
 
 
+class RawResult:
+    @classmethod
+    def model_validate(cls, obj):
+        return obj
+
+
 class RepositoryMCP:
     def __init__(self, session, user_id, owner, repo, token):
         self.session, self.user_id = session, user_id
@@ -30,12 +36,15 @@ class RepositoryMCP:
         cursor = None
         for _ in range(10):
             page = await self.session.list_tools(cursor=cursor)
-            for tool in page.tools:
-                props = tool.inputSchema.get("properties", {})
-                if (tool.name in READ_TOOLS and tool.annotations and tool.annotations.readOnlyHint
+            tools_list = getattr(page, "tools", []) or []
+            for tool in tools_list:
+                props = (getattr(tool, "inputSchema", {}) or {}).get("properties", {}) or {}
+                annotations = getattr(tool, "annotations", None)
+                is_readonly = getattr(annotations, "readOnlyHint", False) if annotations else False
+                if (tool.name in READ_TOOLS and is_readonly
                         and "owner" in props and "repo" in props):
                     self.tools[tool.name] = tool
-            cursor = page.nextCursor
+            cursor = getattr(page, "nextCursor", None)
             if not cursor:
                 break
         if not self.tools:
@@ -52,10 +61,61 @@ class RepositoryMCP:
             if key in arguments and str(arguments[key]).lower() != expected.lower():
                 return {"error": "Tool calls are restricted to the selected repository"}
             arguments[key] = expected
-        result = await self.session.call_tool(name, arguments=arguments)
-        if result.isError:
+        
+        from mcp import types
+        try:
+            raw_res = await self.session.send_request(
+                types.ClientRequest(
+                    types.CallToolRequest(
+                        params=types.CallToolRequestParams(name=name, arguments=arguments),
+                    )
+                ),
+                RawResult,
+            )
+        except Exception as exc:
+            try:
+                result = await self.session.call_tool(name, arguments=arguments)
+                if getattr(result, "isError", False):
+                    return {"error": "GitHub MCP could not complete this read. Check repository access, scopes, or rate limits."}
+                blocks = getattr(result, "content", []) or []
+                text = "\n".join(block.text for block in blocks if getattr(block, "type", None) == "text" and hasattr(block, "text") and block.text)
+                text = text.replace(self._token, "[REDACTED]")
+                return {"content": text[:24000], "truncated": len(text) > 24000}
+            except Exception as e:
+                logger.error(f"[Agent] MCP call_tool failed for {name}: {e}")
+                return {"error": f"GitHub MCP tool execution error: {e}"}
+
+        if isinstance(raw_res, dict) and raw_res.get("isError"):
             return {"error": "GitHub MCP could not complete this read. Check repository access, scopes, or rate limits."}
-        text = "\n".join(block.text for block in result.content if block.type == "text")
+
+        content_raw = (raw_res.get("content", []) if isinstance(raw_res, dict) else []) or []
+        texts = []
+        if isinstance(content_raw, list):
+            for item in content_raw:
+                if isinstance(item, dict):
+                    if item.get("type") == "text" and "text" in item and item["text"] is not None:
+                        texts.append(str(item["text"]))
+                    elif item.get("type") in ("resource", "embedded_resource"):
+                        res = item.get("resource")
+                        if isinstance(res, dict):
+                            if "text" in res and res["text"] is not None:
+                                texts.append(str(res["text"]))
+                            elif "blob" in res and res["blob"] is not None:
+                                texts.append(str(res["blob"]))
+                            elif "uri" in res and res["uri"] is not None:
+                                texts.append(str(res["uri"]))
+                            else:
+                                texts.append(str(res))
+                        elif isinstance(res, str):
+                            texts.append(res)
+                    elif "text" in item and item["text"] is not None:
+                        texts.append(str(item["text"]))
+                elif item is not None and hasattr(item, "text") and getattr(item, "text", None) is not None:
+                    texts.append(str(getattr(item, "text", "")))
+        elif isinstance(content_raw, str):
+            texts.append(content_raw)
+
+        text = "\n".join(t for t in texts if t)
         text = text.replace(self._token, "[REDACTED]")
         return {"content": text[:24000], "truncated": len(text) > 24000}
 

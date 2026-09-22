@@ -38,15 +38,6 @@ export default function GitHubConnection({ account, onAccountChange, onSelect, d
     <div className="section-label">GitHub Connection</div>
     {account?.github_connected ? <>
       <p>GitHub Connected ✓ <strong>{account.user.github_login}</strong></p>
-      <label className="field-label" htmlFor="github-repository">Your accessible repositories</label>
-      <select id="github-repository" className="input-field" defaultValue="" disabled={disabled || loading}
-        onChange={e => onSelect(e.target.value)}>
-        <option value="">Select a repository</option>
-        {repositories.map(repo => <option key={repo.id} value={repo.full_name}>
-          {repo.full_name}{repo.private ? " (private)" : ""}
-        </option>)}
-      </select>
-      {nextPage && <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => load(nextPage)}>Load more</button>}
       <button className="btn btn-secondary btn-sm" disabled={loading || disabled} onClick={disconnect}>Disconnect GitHub</button>
     </> : <a className="btn btn-primary" href={api.loginUrl}>Connect GitHub</a>}
     {loading && <p>Loading GitHub connection…</p>}

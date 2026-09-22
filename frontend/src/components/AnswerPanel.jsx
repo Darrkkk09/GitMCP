@@ -334,10 +334,13 @@ export default function AnswerPanel({ answer, loading, connectedRepo, history = 
           className="markdown-body"
           style={{ color: "var(--text-primary)", fontSize: "0.9rem", lineHeight: 1.7 }}
         >
-          {answer.answer
-            ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer.answer}</ReactMarkdown>
-            : <span style={{ color: "var(--text-tertiary)", fontStyle: "italic" }}>No answer content returned.</span>
-          }
+          {answer.answer ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer.answer}</ReactMarkdown>
+          ) : (
+            <span style={{ color: "var(--text-tertiary)", fontStyle: "italic" }}>
+              The analysis completed but no answer was returned.
+            </span>
+          )}
         </div>
       </div>
 

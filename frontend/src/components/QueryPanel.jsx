@@ -44,8 +44,15 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
 
     try {
       const data = await api.queryMCP(mcpRepo, currentQuestion, history);
+      
+      console.log("[MCP UI] Raw API Data:", data);
+      console.log("[MCP UI] Answer length:", data?.answer ? data.answer.length : 0);
+      console.log("[MCP UI] Trace entries:", data?.steps ? data.steps.length : 0);
+
       const formatted = {
         ...data,
+        answer: data.answer || "The analysis completed but no answer was returned.",
+        steps: data.steps || [],
         repo_names: [data.repo_name || mcpRepo],
         matched_chunks: "Live MCP",
         mode: "github_mcp",
@@ -58,13 +65,23 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
         onHistoryChange([
           ...history.slice(-36),
           { role: "user", content: currentQuestion },
-          { role: "assistant", content: formatted.answer || "" },
+          { role: "assistant", content: formatted.answer },
         ]);
       }
 
       setQuestion("");
     } catch (err) {
-      setError(err.message || "GitHub repository could not be accessed. Verify permission or reconnect GitHub.");
+      console.error("[MCP UI] Request error:", err);
+      const errMsg = err.message || "GitHub repository could not be accessed. Verify permission or reconnect GitHub.";
+      setError(errMsg);
+      onAnswer({
+        mode: "github_mcp",
+        repo_names: [mcpRepo],
+        question: currentQuestion,
+        answer: `**Error processing request:** ${errMsg}`,
+        steps: err.steps || ["Query failed"],
+        error: true,
+      });
     } finally {
       stopTimer(timerId);
       onLoading(false);

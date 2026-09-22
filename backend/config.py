@@ -7,7 +7,7 @@ load_dotenv(BASE_DIR / ".env")
 
 def get_gemini_api_keys():
     keys = []
-    for k in ["GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3", "GEMINI_API_KEY4"]:
+    for k in ["GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3", "GEMINI_API_KEY4","GEMINI_API_KEY5"]:
         val = os.getenv(k)
         if val and val.strip() and val.strip() not in keys:
             keys.append(val.strip())

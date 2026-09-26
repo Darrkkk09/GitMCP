@@ -703,6 +703,8 @@ async def answer_question_with_mcp(user_id, owner, repo, question, history=None)
                         if not repository_discovered:
                             return False
                         if is_api_question:
+                            if len(discovered_route_files) == 0:
+                                return True
                             return len(retrieved_route_sources) > 0 or total_source_files_retrieved > 0
                         return True
 
@@ -805,6 +807,10 @@ async def answer_question_with_mcp(user_id, owner, repo, question, history=None)
                     # Path resolution for get_file_contents or other file-based calls
                     if call.name == "get_file_contents" and "path" in args:
                         orig_path = str(args["path"]).strip()
+                        if orig_path == "/":
+                            orig_path = ""
+                        elif orig_path.startswith("/"):
+                            orig_path = orig_path[1:]
                         resolved_path = orig_path
                         if orig_path in known_paths:
                             resolved_path = known_paths[orig_path]
@@ -1044,6 +1050,11 @@ async def answer_question_with_mcp(user_id, owner, repo, question, history=None)
                     )
                 contents.append(types.Content(role="tool", parts=responses))
 
+    if steps and repository_discovered:
+        return {
+            "answer": f"Analysis incomplete (reached {MAX_AGENT_TURNS} turn limit). The agent could not fully resolve the request within the turn limit. Here are the findings so far.",
+            "steps": steps,
+        }
     raise HTTPException(502, f"Reasoning turn limit reached ({MAX_AGENT_TURNS} turns max). Try asking about a specific subfolder or module.")
 
 

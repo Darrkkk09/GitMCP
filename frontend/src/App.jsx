@@ -74,13 +74,13 @@ export default function App() {
           onLaunchMcp={() => setActiveTab("workspace")}
         />
       ) : authLoading ? <p>Checking your session…</p> : !account?.github_connected ? (
-        <GitHubConnection account={account} onAccountChange={refreshAccount} onSelect={selectConnectedRepo} />
+        <GitHubConnection account={account} onAccountChange={refreshAccount} onSelect={selectConnectedRepo} mode="full" />
       ) : (
         <div className="workspace fade-in">
           <div className="workspace-body">
             {/* Left sidebar */}
             <aside className="sidebar">
-              <GitHubConnection account={account} onAccountChange={refreshAccount} onSelect={selectConnectedRepo} disabled={answerLoading} />
+              <GitHubConnection account={account} onAccountChange={refreshAccount} onSelect={selectConnectedRepo} disabled={answerLoading} mode="sidebar" />
               <div className="sidebar-divider" />
               <ReposPanel
                 selectedRepo={connectedRepo}

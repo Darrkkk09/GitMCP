@@ -5,7 +5,7 @@ import logging
 import subprocess
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 # Python 3.14 C-extension protobuf workaround for ChromaDB compatibility
 sys.modules['google._upb._message'] = None
@@ -39,6 +39,21 @@ def _sanitize_collection_name(user_id: str, owner: str, repo: str) -> str:
     if len(cleaned) < 3:
         cleaned = f"col_{cleaned}"
     return cleaned[:63]
+
+def get_user_collections(user_id: str) -> List[Dict[str, str]]:
+    client = get_chroma_client()
+    prefix = f"rag_{user_id}_".lower()
+    results = []
+    for col in client.list_collections():
+        cname = col.name.lower()
+        if cname.startswith(prefix):
+            parts = cname[len(prefix):].split("_", 1)
+            if len(parts) == 2:
+                owner, repo = parts[0], parts[1]
+            else:
+                owner, repo = "user", cname[len(prefix):]
+            results.append({"name": col.name, "owner": owner, "repo": repo})
+    return results
 
 def get_repo_clone_path(user_id: str, owner: str, repo: str) -> Path:
     return CLONE_DIR / str(user_id) / f"{owner}_{repo}"
@@ -185,6 +200,11 @@ def ingest_repository_rag(user_id: str, owner: str, repo: str, token: Optional[s
         
     collection = client.create_collection(name=col_name)
     
+    # Add repo metadata to each chunk
+    for c in chunks:
+        c["metadata"]["repo"] = f"{owner}/{repo}"
+        c["text"] = f"Repository: {owner}/{repo}\n" + c["text"]
+    
     # Batch add to ChromaDB (500 items per batch)
     batch_size = 500
     for i in range(0, len(chunks), batch_size):
@@ -229,38 +249,74 @@ async def answer_question_with_rag(
     history: Optional[List[Any]] = None,
     token: Optional[str] = None
 ) -> Dict[str, Any]:
-    steps = [f"Mode: Repository RAG (Vector Search)", f"Target Repository: {owner}/{repo}"]
-    
-    status = get_rag_status(user_id, owner, repo)
-    if not status["indexed"]:
-        steps.append(f"Cloning and indexing repository for vector search...")
-        ingest_res = ingest_repository_rag(user_id, owner, repo, token)
-        steps.append(f"Indexed {ingest_res['file_count']} files ({ingest_res['chunk_count']} chunks) in ChromaDB")
-    else:
-        steps.append(f"Using existing vector index ({status['chunk_count']} chunks in ChromaDB)")
-        
+    steps = [f"Mode: Repository RAG (Vector Search)"]
     client = get_chroma_client()
-    col_name = _sanitize_collection_name(user_id, owner, repo)
-    collection = client.get_collection(col_name)
     
-    # Query top-k relevant chunks
-    steps.append(f"Executing vector similarity search for query: '{question}'")
-    query_res = collection.query(query_texts=[question], n_results=min(8, collection.count()))
+    # Handle multi-repository querying if repo specifies comma-separated repos or "all"
+    is_multi_repo = (repo == "all") or ("," in repo)
+    target_collections = []
     
-    docs = query_res.get("documents", [[]])[0]
-    metas = query_res.get("metadatas", [[]])[0]
+    if is_multi_repo:
+        steps.append(f"Multi-repository RAG mode: searching profile repositories...")
+        if repo == "all":
+            cols = get_user_collections(user_id)
+            target_collections = [c["name"] for c in cols]
+        else:
+            repos_list = [r.strip() for r in repo.split(",") if r.strip()]
+            for r_item in repos_list:
+                if "/" in r_item:
+                    o_item, rp_item = r_item.split("/", 1)
+                    target_collections.append(_sanitize_collection_name(user_id, o_item, rp_item))
+    else:
+        steps.append(f"Target Repository: {owner}/{repo}")
+        col_name = _sanitize_collection_name(user_id, owner, repo)
+        status = get_rag_status(user_id, owner, repo)
+        if not status["indexed"]:
+            steps.append(f"Cloning and indexing repository for vector search...")
+            ingest_res = ingest_repository_rag(user_id, owner, repo, token)
+            steps.append(f"Indexed {ingest_res['file_count']} files ({ingest_res['chunk_count']} chunks) in ChromaDB")
+        else:
+            steps.append(f"Using existing vector index ({status['chunk_count']} chunks in ChromaDB)")
+        target_collections = [col_name]
+        
+    all_retrieved_chunks = []
+    for cname in target_collections:
+        try:
+            col = client.get_collection(cname)
+            if col.count() == 0:
+                continue
+            res = col.query(query_texts=[question], n_results=min(6, col.count()))
+            docs = res.get("documents", [[]])[0]
+            metas = res.get("metadatas", [[]])[0]
+            distances = res.get("distances", [[]])[0] if res.get("distances") else [0.5] * len(docs)
+            for doc, meta, dist in zip(docs, metas, distances):
+                all_retrieved_chunks.append({
+                    "document": doc,
+                    "metadata": meta,
+                    "distance": dist,
+                })
+        except Exception as e:
+            logger.warning(f"[RAG] Collection {cname} query skipped: {e}")
+            
+    # Sort chunks across repositories by similarity distance
+    all_retrieved_chunks.sort(key=lambda x: x.get("distance", 1.0))
+    top_chunks = all_retrieved_chunks[:8]
     
     sources = []
     retrieved_context_blocks = []
     seen_files = set()
     
-    for doc, meta in zip(docs, metas):
+    for item in top_chunks:
+        doc = item["document"]
+        meta = item["metadata"]
         file_path = meta.get("file_path", "unknown")
+        repo_name = meta.get("repo", f"{owner}/{repo}")
         start_line = meta.get("start_line", 1)
         end_line = meta.get("end_line", 1)
         
-        seen_files.add(file_path)
+        seen_files.add(f"{repo_name}:{file_path}")
         sources.append({
+            "repo": repo_name,
             "file_path": file_path,
             "start_line": start_line,
             "end_line": end_line,
@@ -269,10 +325,9 @@ async def answer_question_with_rag(
         retrieved_context_blocks.append(doc)
         
     for sf in sorted(seen_files):
-        steps.append(f"Retrieved context: {sf}")
+        steps.append(f"Retrieved chunk: {sf}")
         
     steps.append(f"Synthesizing RAG answer with Gemini/Groq LLM fallback...")
-    
     context_str = "\n\n".join(retrieved_context_blocks)
     
     # Build prompt history to support follow-up questions
@@ -286,22 +341,24 @@ async def answer_question_with_rag(
                 contents.append(types.Content(role=role, parts=[types.Part.from_text(text=text.strip())]))
                 
     current_prompt = (
-        f"You are GiTMCP RAG assistant analyzing the repository '{owner}/{repo}'.\n"
-        f"Below are the most relevant code chunks retrieved from the ChromaDB vector database for the user's question.\n\n"
+        f"You are GiTMCP RAG assistant analyzing code for user '{user_id}'.\n"
+        f"Target Repository Context: '{owner}/{repo}'\n"
+        f"Below are the most relevant code chunks retrieved from ChromaDB vector search across indexed repository files for the user's question.\n\n"
         f"--- RETRIEVED CODE CONTEXT ---\n"
         f"{context_str}\n"
         f"--- END RETRIEVED CODE CONTEXT ---\n\n"
         f"User Question: {question}\n\n"
         f"INSTRUCTIONS:\n"
-        f"1. Answer the question based strictly on the retrieved code chunks above.\n"
-        f"2. Reference specific file paths and line numbers when explaining code logic.\n"
-        f"3. If the retrieved context is insufficient to fully answer, state clearly what is missing.\n"
-        f"4. Be concise, developer-focused, and accurate."
+        f"1. Resolve references in the conversation history (e.g., 'that function', 'this repository', 'previous route') to answer accurately.\n"
+        f"2. Answer the question based on the retrieved code chunks above and conversation history.\n"
+        f"3. Reference specific repository names, file paths, and line numbers when explaining code logic.\n"
+        f"4. If the retrieved context is insufficient, state clearly what is missing.\n"
+        f"5. Be concise, developer-focused, and accurate."
     )
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=current_prompt)]))
     
     instruction = (
-        f"You are GiTMCP RAG Assistant. Provide clear, accurate developer answers using retrieved code context."
+        f"You are GiTMCP RAG Assistant. Provide clear, accurate developer answers using retrieved code context and conversation history."
     )
     
     config = types.GenerateContentConfig(

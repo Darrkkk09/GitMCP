@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../api";
-import { Zap, AlertCircle, Send, Clock, GitBranch } from "lucide-react";
+import { Zap, AlertCircle, Send, Clock, GitBranch, Database, RefreshCw, CheckCircle, Layers } from "lucide-react";
 
 function fmtElapsed(ms) {
   const s = Math.floor(ms / 1000);
@@ -10,14 +10,48 @@ function fmtElapsed(ms) {
 
 export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, isLoading, history = [], onHistoryChange }) {
   const [question, setQuestion] = useState("");
-  const [mcpRepo, setMcpRepo] = useState("");
+  const [targetRepo, setTargetRepo] = useState("");
+  const [mode, setMode] = useState("mcp"); // "mcp" or "rag"
+  const [ragStatus, setRagStatus] = useState({ indexed: false, chunk_count: 0 });
+  const [ragLoading, setRagLoading] = useState(false);
   const [error, setError] = useState(null);
   const [elapsed, setElapsed] = useState(0);
 
-  useEffect(() => { setMcpRepo(connectedRepo); }, [connectedRepo]);
+  useEffect(() => {
+    setTargetRepo(connectedRepo);
+    if (connectedRepo) {
+      checkRagStatus(connectedRepo);
+    } else {
+      setRagStatus({ indexed: false, chunk_count: 0 });
+    }
+  }, [connectedRepo]);
 
   const tickInterval = useRef(null);
   useEffect(() => () => clearInterval(tickInterval.current), []);
+
+  async function checkRagStatus(repo) {
+    if (!repo) return;
+    try {
+      const data = await api.getRAGStatus(repo);
+      setRagStatus(data);
+    } catch (e) {
+      setRagStatus({ indexed: false, chunk_count: 0 });
+    }
+  }
+
+  async function handleIngestRAG() {
+    if (!targetRepo || ragLoading) return;
+    setRagLoading(true);
+    setError(null);
+    try {
+      const res = await api.ingestRAG(targetRepo);
+      await checkRagStatus(targetRepo);
+    } catch (err) {
+      setError(err.message || "RAG indexing failed. Check repo access.");
+    } finally {
+      setRagLoading(false);
+    }
+  }
 
   function startTimer() {
     const t0 = Date.now();
@@ -32,7 +66,7 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
     tickInterval.current = null;
   }
 
-  const canQuery = mcpRepo.trim().length > 0 && question.trim().length > 0 && !isLoading;
+  const canQuery = targetRepo.trim().length > 0 && question.trim().length > 0 && !isLoading;
 
   async function handleSubmit(e) {
     if (e) e.preventDefault();
@@ -43,19 +77,23 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
     const timerId = startTimer();
 
     try {
-      const data = await api.queryMCP(mcpRepo, currentQuestion, history);
+      let data;
+      if (mode === "rag") {
+        data = await api.queryRAG(targetRepo, currentQuestion, history);
+      } else {
+        data = await api.queryMCP(targetRepo, currentQuestion, history);
+      }
       
-      console.log("[MCP UI] Raw API Data:", data);
-      console.log("[MCP UI] Answer length:", data?.answer ? data.answer.length : 0);
-      console.log("[MCP UI] Trace entries:", data?.steps ? data.steps.length : 0);
+      console.log(`[${mode.toUpperCase()} UI] API Data:`, data);
 
       const formatted = {
         ...data,
         answer: data.answer || "The analysis completed but no answer was returned.",
         steps: data.steps || [],
-        repo_names: [data.repo_name || mcpRepo],
-        matched_chunks: "Live MCP",
-        mode: "github_mcp",
+        sources: data.sources || [],
+        repo_names: [data.repo_name || targetRepo],
+        matched_chunks: mode === "rag" ? (data.sources ? data.sources.length : 0) : "Live MCP",
+        mode: mode === "rag" ? "rag" : "github_mcp",
         question: currentQuestion,
       };
 
@@ -70,13 +108,14 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
       }
 
       setQuestion("");
+      if (mode === "rag") checkRagStatus(targetRepo);
     } catch (err) {
-      console.error("[MCP UI] Request error:", err);
-      const errMsg = err.message || "GitHub repository could not be accessed. Verify permission or reconnect GitHub.";
+      console.error(`[${mode.toUpperCase()} UI] Request error:`, err);
+      const errMsg = err.message || "Repository analysis failed. Please try again.";
       setError(errMsg);
       onAnswer({
-        mode: "github_mcp",
-        repo_names: [mcpRepo],
+        mode: mode === "rag" ? "rag" : "github_mcp",
+        repo_names: [targetRepo],
         question: currentQuestion,
         answer: `**Error processing request:** ${errMsg}`,
         steps: err.steps || ["Query failed"],
@@ -90,27 +129,79 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
 
   return (
     <div className="query-section" style={{ background: "var(--bg-card)", border: "1px solid var(--border-subtle)", borderRadius: 12, padding: 18 }}>
-      {/* Target Repo Bar */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, paddingBottom: 10, borderBottom: "1px solid var(--border-subtle)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <GitBranch size={14} style={{ color: "var(--accent-primary)" }} />
-          <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-primary)" }}>
-            {mcpRepo ? mcpRepo : "No repository selected"}
-          </span>
+      
+      {/* Pipeline Mode Switcher & Repo Header */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 14, paddingBottom: 12, borderBottom: "1px solid var(--border-subtle)" }}>
+        
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <GitBranch size={15} style={{ color: "var(--accent-primary)" }} />
+            <span style={{ fontSize: "0.88rem", fontWeight: 700, color: "var(--text-primary)" }}>
+              {targetRepo ? targetRepo : "No repository selected"}
+            </span>
+          </div>
+
+          {/* Mode Selector Segment */}
+          <div className="nav-pills" style={{ padding: 2 }}>
+            <button
+              type="button"
+              className={`nav-pill ${mode === "mcp" ? "active" : ""}`}
+              onClick={() => setMode("mcp")}
+              style={{ padding: "4px 10px", fontSize: "0.76rem" }}
+            >
+              <Zap size={12} color="#1a7f37" />
+              ⚡ Live MCP
+            </button>
+            <button
+              type="button"
+              className={`nav-pill ${mode === "rag" ? "active" : ""}`}
+              onClick={() => setMode("rag")}
+              style={{ padding: "4px 10px", fontSize: "0.76rem" }}
+            >
+              <Database size={12} color="#0969da" />
+              📚 Repo RAG
+            </button>
+          </div>
         </div>
-        {mcpRepo && (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: "9999px", background: "#10b98118", border: "1px solid #10b98135", color: "#10b981", fontSize: "0.72rem", fontWeight: 600 }}>
-            <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#10b981" }} />
-            Live GitHub MCP
-          </span>
-        )}
+
+        {/* Pipeline Info & RAG Controls */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, background: "#f8fafc", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
+          {mode === "mcp" ? (
+            <div style={{ fontSize: "0.76rem", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
+              <strong>Live MCP Mode:</strong> Direct GitHub tool calls without embedding storage.
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontSize: "0.76rem", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: ragStatus.indexed ? "#0969da" : "#d97706", display: "inline-block" }} />
+                <strong>RAG ChromaDB Vector Mode:</strong> {ragStatus.indexed ? `Indexed (${ragStatus.chunk_count} code chunks)` : "Not indexed yet"}
+              </div>
+
+              {targetRepo && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleIngestRAG}
+                  disabled={ragLoading || isLoading}
+                  style={{ fontSize: "0.73rem", padding: "3px 8px", display: "flex", alignItems: "center", gap: 5 }}
+                >
+                  {ragLoading ? <RefreshCw size={11} className="spin" /> : <Layers size={11} />}
+                  <span>{ragStatus.indexed ? "Re-index Repo" : "Index Repo for RAG"}</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
       </div>
 
+      {/* Query Form */}
       <form onSubmit={handleSubmit} className="query-fields">
         <div>
           <div className="field-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-secondary)" }}>
-              {history.length > 0 ? "Follow-up Question" : "Ask anything about this repository"}
+              {history.length > 0 ? "Follow-up Question" : `Ask question using ${mode === "rag" ? "RAG Vector Search" : "Live MCP"}`}
             </span>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               {history.length > 0 && onHistoryChange && (
@@ -129,15 +220,17 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
           <textarea
             className="input-field"
             placeholder={
-              !mcpRepo
+              !targetRepo
                 ? "Select a repository from the sidebar or type owner/repo..."
                 : history.length > 0
                 ? "Ask a follow-up question..."
-                : "e.g. What APIs does this repo have? Or give me a high-level architecture overview."
+                : mode === "rag"
+                ? "Ask code question via ChromaDB RAG vector search..."
+                : "Ask code question via live GitHub MCP tool calls..."
             }
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            disabled={isLoading || !mcpRepo}
+            disabled={isLoading || !targetRepo}
             rows={3}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSubmit(e);
@@ -155,7 +248,7 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
           {isLoading ? (
             <>
               <div className="spinner" />
-              <span>↻ Inspecting repository...</span>
+              <span>{mode === "rag" ? "Searching ChromaDB & Synthesizing RAG..." : "Inspecting repository via MCP..."}</span>
               {elapsed >= 2 && (
                 <span style={{ marginLeft: "auto", fontSize: "0.73rem", opacity: 0.8, display: "flex", alignItems: "center", gap: 4 }}>
                   <Clock size={11} />
@@ -166,7 +259,7 @@ export default function QueryPanel({ connectedRepo = "", onAnswer, onLoading, is
           ) : (
             <>
               <Send size={14} />
-              <span>Ask GiTMCP</span>
+              <span>{mode === "rag" ? "Query via RAG" : "Ask GiTMCP"}</span>
             </>
           )}
         </button>

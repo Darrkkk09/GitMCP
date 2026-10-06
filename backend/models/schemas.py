@@ -13,5 +13,8 @@ class MCPQueryRequest(BaseModel):
     history: List[ChatMessage] = Field(default_factory=list, max_length=40)
     mode: Optional[str] = "mcp"
 
+class RAGIngestRequest(BaseModel):
+    github_repo: str
+
 # Alias for clean architecture
 ChatRequest = MCPQueryRequest

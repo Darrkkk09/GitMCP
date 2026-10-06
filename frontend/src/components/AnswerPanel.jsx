@@ -171,7 +171,7 @@ export default function AnswerPanel({ answer, loading, connectedRepo, history = 
   const steps          = answer.steps      || [];
   const fileSample     = answer.file_sample || [];
   const uniqueSources  = sources.filter(
-    (s, i, arr) => arr.findIndex((x) => x.path === s.path && x.repo === s.repo) === i
+    (s, i, arr) => arr.findIndex((x) => (x.path || x.file_path) === (s.path || s.file_path)) === i
   );
 
   const accentColor  = isMcp ? "#1a7f37" : "#0969da";
@@ -358,7 +358,11 @@ export default function AnswerPanel({ answer, loading, connectedRepo, history = 
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {uniqueSources.map((s, i) => (
-              <FilePill key={i} label={`${s.repo}/${s.path}`} color={getRepoColor(s.repo)} />
+              <FilePill
+                key={i}
+                label={s.file_path ? `${s.file_path}${s.start_line ? ` (L${s.start_line}-${s.end_line})` : ''}` : `${s.repo ? `${s.repo}/` : ''}${s.path}`}
+                color={getRepoColor(s.repo || connectedRepo)}
+              />
             ))}
             {fileSample.map((fp, i) => (
               <FilePill key={`fs-${i}`} label={fp} icon={FileCode} />

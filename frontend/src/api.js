@@ -34,4 +34,12 @@ export const api = {
   queryMCP: (githubRepo, question, history = []) => request("/query/mcp", {
     method: "POST", body: JSON.stringify({ github_repo: githubRepo, question, history, mode: "mcp" }),
   }),
+  queryRAG: (githubRepo, question, history = []) => request("/query/rag", {
+    method: "POST", body: JSON.stringify({ github_repo: githubRepo, question, history, mode: "rag" }),
+  }),
+  ingestRAG: (githubRepo) => request("/rag/ingest", {
+    method: "POST", body: JSON.stringify({ github_repo: githubRepo }),
+  }),
+  getRAGStatus: (githubRepo) => request(`/rag/status?github_repo=${encodeURIComponent(githubRepo)}`),
 };
+
